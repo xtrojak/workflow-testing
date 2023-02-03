@@ -47,7 +47,7 @@ jobs:
     name: Test workflows
     needs: setup
     if: needs.setup.outputs.repository-list != ''
-    uses: ./.github/workflows/test_workflows.yml
+    uses: ./.github/workflows/run_tests.yml
     with:
       galaxy-head-sha: ${{ needs.setup.outputs.galaxy-head-sha }}
       chunk-count: ${{ fromJSON(needs.setup.outputs.chunk-count) }}
