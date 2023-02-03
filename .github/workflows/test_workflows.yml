@@ -61,6 +61,7 @@ jobs:
       uses: galaxyproject/planemo-ci-action@v1
       id: discover
       with:
+        workflows: true
         create-cache: ${{ steps.cache-pip.outputs.cache-hit != 'true' || steps.cache-planemo.outputs.cache-hit != 'true' }}
         galaxy-fork: ${{ steps.get-fork-branch.outputs.fork }}
         galaxy-branch: ${{ steps.get-fork-branch.outputs.branch }}
@@ -72,8 +73,39 @@ jobs:
       run: |
         echo 'Using ${{ steps.discover.outputs.chunk-count }} chunks (${{ steps.discover.outputs.chunk-list }})'
 
+  # Planemo lint the workflows
+  lint:
+    name: Lint workflows
+    needs: setup
+    if: needs.setup.outputs.repository-list != ''
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.7']
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 1
+    - uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Cache .cache/pip
+      uses: actions/cache@v3
+      id: cache-pip
+      with:
+        path: ~/.cache/pip
+        key: pip_cache_py_${{ matrix.python-version }}_gxy_${{ needs.setup.outputs.galaxy-head-sha }}
+    - name: Install wheel
+      run: pip install wheel
+    - name: Planemo lint workflows
+      uses: galaxyproject/planemo-ci-action@v1
+      with:
+        mode: lint
+        workflows: true
+        repository-list: "${{ needs.setup.outputs.repository-list }}"
+
   test:
-    name: Test tools
+    name: Test workflows
     # This job runs on Linux
     runs-on: ubuntu-latest
     needs: setup
@@ -107,33 +139,27 @@ jobs:
       with:
         path: ~/.cache/pip
         key: pip_cache_py_${{ matrix.python-version }}_gxy_${{ needs.setup.outputs.galaxy-head-sha }}
-    - name: Get number of CPU cores
-      uses: SimenB/github-actions-cpu-cores@v1
-      id: cpu-cores
-    - name: Clean dotnet folder for space
-      run: rm -Rf /usr/share/dotnet
-    - name: Planemo test
+    - name: Planemo test workflows
       uses: galaxyproject/planemo-ci-action@v1
-      id: test
+      id: test-workflows
       with:
         mode: test
+        workflows: true
+        setup-cvmfs: true
         repository-list: ${{ needs.setup.outputs.repository-list }}
         galaxy-fork: ${{ needs.setup.outputs.fork }}
         galaxy-branch: ${{ needs.setup.outputs.branch }}
         chunk: ${{ matrix.chunk }}
         chunk-count: ${{ needs.setup.outputs.chunk-count }}
-        galaxy-slots: ${{ steps.cpu-cores.outputs.count }}
-        # Limit each test to 15 minutes
-        test_timeout: 900
     - uses: actions/upload-artifact@v3
       with:
-        name: 'Tool test output ${{ matrix.chunk }}'
+        name: 'Workflow test output ${{ matrix.chunk }}'
         path: upload
 
   # - combine the results of the test chunks (which will never fail due
   #   to `|| true`) and create a global test report as json and html which
   #   is provided as artifact
-  # - check if any tool test actually failed (by lookup in the combined json)
+  # - check if any test actually failed (by lookup in the combined json)
   #   and fail this step if this is the case
   combine_outputs:
     name: Combine chunked test results
@@ -164,15 +190,15 @@ jobs:
         html-report: true
     - uses: actions/upload-artifact@v3
       with:
-        name: 'All tool test results'
+        name: 'All workflow test results'
         path: upload
     - name: Create URL to the run output
-      if: ${{ github.event.client_payload.slash_command.command == 'run-all-tool-tests' }}
+      if: ${{ github.event.client_payload.slash_command.command == 'run-all-workflow-tests' }}
       id: vars
       run: echo "run-url=https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >> $GITHUB_OUTPUT
 
     - name: Create comment
-      if: ${{ github.event.client_payload.slash_command.command == 'run-all-tool-tests' }}
+      if: ${{ github.event.client_payload.slash_command.command == 'run-all-workflow-tests' }}
       uses: peter-evans/create-or-update-comment@v2
       with:
         token: ${{ secrets.PAT }}
@@ -183,7 +209,7 @@ jobs:
 
           ${{ steps.combine.outputs.statistics }}
 
-          [Find all tool test results here][1]
+          [Find all workflow test results here][1]
 
           [1]: ${{ steps.vars.outputs.run-url }}
     - name: Check outputs
