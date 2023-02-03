@@ -1,64 +1,26 @@
-name: Test Galaxy workflows
-on:
-  workflow_call:
-    inputs:
-      galaxy-head-sha:
-        description: 'hash of the latest commit in the Galaxy repo'
-        required: true
-        type: string
-      chunk-count:
-        description: 'number of tests to run in parallel'
-        default: 1
-        required: false
-        type: number
-      chunk-list:
-        description: 'stringified JSON array of chunk IDs'
-        default: "[0]"
-        required: false
-        type: string
-      python-version-list:
-        description: 'stringified JSON array of Python versions'
-        default: "[\"3.7\"]"
-        required: false
-        type: string
-      repository-list:
-        description: 'list of repositories to test'
-        default: ''
-        required: false
-        type: string
-      galaxy-fork:
-        description: 'Galaxy fork to use'
-        default: ''
-        required: false
-        type: string
-      galaxy-branch:
-        description: 'Galaxy branch to use'
-        default: ''
-        required: false
-        type: string
-      check-outputs:
-        description: 'if true, check if any workflow test failed'
-        default: false
-        required: false
-        type: boolean
+# workflow level env vars cannot be used at the job level
+# https://github.community/t/how-to-set-and-access-a-workflow-variable/17335/15
+name: Galaxy Workflow Tests for push and PR
+on: [push, pull_request]
 jobs:
-  test:
-    name: Test workflows
+  setup:
+    name: Setup cache and determine changed repositories
+    uses: ./.github/workflows/setup.yml
+    with:
+      python-version-list: "[\"3.7\"]"
+      galaxy-fork: galaxyproject
+      galaxy-branch: release_22.05
+      max-chunks: 4
+
+  # Planemo lint the changed repositories
+  lint:
+    name: Lint workflows
+    needs: setup
+    if: needs.setup.outputs.repository-list != ''
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
-        chunk: ${{ fromJson(inputs.chunk-list) }}
-        python-version: ${{ fromJson(inputs.python-version-list) }}
-    services:
-      postgres:
-        image: postgres:11
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: postgres
-        ports:
-          - 5432:5432
+        python-version: ['3.7']
     steps:
     - uses: actions/checkout@v3
       with:
@@ -71,25 +33,63 @@ jobs:
       id: cache-pip
       with:
         path: ~/.cache/pip
-        key: pip_cache_py_${{ matrix.python-version }}_gxy_${{ inputs.galaxy-head-sha }}
-    - name: Planemo test workflows
+        key: pip_cache_py_${{ matrix.python-version }}_gxy_${{ needs.setup.outputs.galaxy-head-sha }}
+    - name: Install wheel
+      run: pip install wheel
+    - name: Planemo lint workflows
       uses: galaxyproject/planemo-ci-action@v1
-      id: test-workflows
       with:
-        mode: test
+        mode: lint
         workflows: true
-        setup-cvmfs: true
-        repository-list: ${{ inputs.repository-list }}
-        galaxy-fork: ${{ inputs.galaxy-fork }}
-        galaxy-branch: ${{ inputs.galaxy-branch }}
-        chunk: ${{ matrix.chunk }}
-        chunk-count: ${{ inputs.chunk-count }}
+        repository-list: "${{ needs.setup.outputs.repository-list }}"
+
+  test:
+    name: Test workflows
+    needs: setup
+    if: needs.setup.outputs.repository-list != ''
+    uses: ./.github/workflows/test_workflows.yml
+    with:
+      galaxy-head-sha: ${{ needs.setup.outputs.galaxy-head-sha }}
+      chunk-count: ${{ fromJSON(needs.setup.outputs.chunk-count) }}
+      chunk-list: ${{ needs.setup.outputs.chunk-list }}
+      python-version-list: "[\"3.7\"]"
+      repository-list: ${{ needs.setup.outputs.repository-list }}
+      galaxy-fork: galaxyproject
+      galaxy-branch: master
+      check-outputs: false
+
+  combine_outputs:
+    # same as tool step
+    name: Combine chunked test results
+    needs: [setup, test]
+    strategy:
+      matrix:
+        python-version: ['3.7']
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/download-artifact@v3
+      with:
+        path: artifacts
+    - uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Cache .cache/pip
+      uses: actions/cache@v3
+      id: cache-pip
+      with:
+        path: ~/.cache/pip
+        key: pip_cache_py_${{ matrix.python-version }}_gxy_{{ needs.setup.outputs.galaxy-head-sha }}
+    - name: Combine outputs
+      uses: galaxyproject/planemo-ci-action@v1
+      id: combine
+      with:
+        mode: combine
+        html-report: true
     - uses: actions/upload-artifact@v3
       with:
-        name: 'Workflow test output ${{ matrix.chunk }}'
+        name: 'All tool test results'
         path: upload
     - name: Check outputs
-      if: inputs.check-outputs
       uses: galaxyproject/planemo-ci-action@v1
       id: check
       with:
